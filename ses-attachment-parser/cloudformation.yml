@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: 'Email parser and attachment extractor.'
+
+Parameters: 
+  EmailBucketName:
+    Type: String
+    Default: 'randomname-ses-1'
+    Description: The bucket used to receive the emails.
+  SourceFolder:
+    Type: String
+    Default: 'subdomain'
+    Description: The bucket used to receive the emails.
+  CsvFolder:
+    Type: String
+    Default: 'csv'
+    Description: The bucket used to receive the emails.
+  ProcessedFolder:
+    Type: String
+    Default: 'processed'
+    Description: The bucket used to receive the emails.
+
+Resources:
+    EmailBucket:
+      Type: AWS::S3::Bucket
+      DependsOn: BucketPermission
+      Properties:
+        BucketName: !Ref EmailBucketName
+        NotificationConfiguration:
+          LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt EmailAttachmentParserLambda.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  -
+                    Name: prefix
+                    Value: !Ref SourceFolder
+
+    BucketPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        Action: 'lambda:InvokeFunction'
+        FunctionName: !Ref EmailAttachmentParserLambda
+        Principal: s3.amazonaws.com
+        SourceAccount: !Ref "AWS::AccountId"
+        SourceArn: !Sub "arn:aws:s3:::${EmailBucketName}"
+
+    BucketPolicy:
+      Type: "AWS::S3::BucketPolicy"
+      Properties: 
+        Bucket: !Ref EmailBucketName
+        PolicyDocument:
+          Statement: 
+            - 
+              Action: 
+                - "s3:PutObject"
+              Effect: "Allow"
+              Resource: 
+                Fn::Join: 
+                  - ""
+                  - 
+                    - "arn:aws:s3:::"
+                    - 
+                      Ref: "EmailBucketName"
+                    - "/*"
+              Principal: 
+                  Service: ses.amazonaws.com
+              Condition: 
+                StringLike: 
+                  aws:Referer: !Ref "AWS::AccountId"
+
+    EmailAttachmentParserLambdaRole: 
+      Type: AWS::IAM::Role
+      Properties: 
+        AssumeRolePolicyDocument: 
+          Version: '2012-10-17'
+          Statement: 
+          - Effect: Allow
+            Principal: 
+              Service: lambda.amazonaws.com
+            Action: 
+            - sts:AssumeRole
+        Path: '/'
+        Policies: 
+        - PolicyName: LambdaCwl
+          PolicyDocument: 
+            Statement: 
+            - Effect: Allow
+              Action: 
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              Resource: arn:aws:logs:*:*:*
+        - PolicyName: S3BucketAndFolderPolicy
+          PolicyDocument: 
+            Statement: 
+            - Effect: Allow
+              Action: 
+              - s3:PutObject
+              - s3:GetObject
+              Resource: 
+              - !Sub 'arn:aws:s3:::${EmailBucketName}/${SourceFolder}/*'
+              - !Sub 'arn:aws:s3:::${EmailBucketName}/${CsvFolder}/*'
+              - !Sub 'arn:aws:s3:::${EmailBucketName}/${ProcessedFolder}/*'
+        - PolicyName: S3BucketAndFolderDeletePolicy
+          PolicyDocument: 
+            Statement: 
+            - Effect: Allow
+              Action: 
+              - s3:DeleteObject
+              Resource: 
+              - !Sub 'arn:aws:s3:::${EmailBucketName}/${SourceFolder}/*'
+    
+    EmailAttachmentParserLambda:
+      Type: AWS::Serverless::Function
+      Properties:
+        CodeUri: ./email_attachment_parser
+        Handler: lambda_function.lambda_handler
+        MemorySize: 128
+        Role: !Sub ${EmailAttachmentParserLambdaRole.Arn}
+        Runtime: python2.7
+        Timeout: 120
+        Environment:
+          Variables:
+            S3_WORK_BUCKET: !Ref EmailBucketName
+            S3_PROCESSED_FOLDER: !Ref ProcessedFolder
+            S3_CSV_FOLDER: !Ref CsvFolder
